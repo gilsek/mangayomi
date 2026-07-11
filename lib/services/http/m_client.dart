@@ -185,11 +185,16 @@ class MCookieManager extends InterceptorContract {
     final cookie = MClient.getCookiesPref(request.url.toString());
     if (cookie.isNotEmpty) {
       final settings = await isar.settings.get(227);
-      final userAgent = settings!.userAgent!;
+      final storedCookie = cookie[HttpHeaders.cookieHeader] ?? "";
+      final userAgent = userAgentForStoredCookie(
+        storedCookie,
+        settings!.userAgent ?? "",
+        request.headers[HttpHeaders.userAgentHeader],
+      );
       if (request.headers[HttpHeaders.cookieHeader] == null) {
         request.headers.addAll(cookie);
       }
-      if (request.headers[HttpHeaders.userAgentHeader] == null) {
+      if (userAgent != null && userAgent.isNotEmpty) {
         request.headers[HttpHeaders.userAgentHeader] = userAgent;
       }
     }
@@ -266,6 +271,24 @@ class LoggerInterceptor extends InterceptorContract {
 
     return response;
   }
+}
+
+String? userAgentForStoredCookie(
+  String cookie,
+  String storedUserAgent,
+  String? requestUserAgent,
+) {
+  final hasCloudflareClearance = cookie
+      .split(';')
+      .map((part) => part.trim())
+      .any((part) => part.startsWith('cf_clearance='));
+  if (hasCloudflareClearance && storedUserAgent.isNotEmpty) {
+    return storedUserAgent;
+  }
+  if (requestUserAgent != null && requestUserAgent.isNotEmpty) {
+    return requestUserAgent;
+  }
+  return storedUserAgent.isEmpty ? null : storedUserAgent;
 }
 
 bool isCloudflare(BaseResponse response) {
