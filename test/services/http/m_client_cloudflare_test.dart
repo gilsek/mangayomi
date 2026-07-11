@@ -33,4 +33,27 @@ void main() {
       expect(userAgent, 'WebView2 User Agent');
     });
   });
+
+  group('cloudflareSolveResult', () {
+    test('retries after the challenge is cleared', () {
+      expect(
+        cloudflareSolveResult(timedOut: false, challengeRemaining: false),
+        isTrue,
+      );
+    });
+
+    test('does not retry while the challenge remains', () {
+      expect(
+        cloudflareSolveResult(timedOut: false, challengeRemaining: true),
+        isFalse,
+      );
+    });
+
+    test('does not retry after a timeout', () {
+      expect(
+        cloudflareSolveResult(timedOut: true, challengeRemaining: false),
+        isFalse,
+      );
+    });
+  });
 }

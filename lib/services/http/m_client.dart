@@ -296,6 +296,13 @@ bool isCloudflare(BaseResponse response) {
       ["cloudflare-nginx", "cloudflare"].contains(response.headers["server"]);
 }
 
+bool cloudflareSolveResult({
+  required bool timedOut,
+  required bool challengeRemaining,
+}) {
+  return !timedOut && !challengeRemaining;
+}
+
 class ResolveCloudFlareChallenge extends RetryPolicy {
   bool showCloudFlareError;
   ResolveCloudFlareChallenge(this.showCloudFlareError);
@@ -455,7 +462,14 @@ void _handleResolveCf(HttpRequest request) async {
 
     request.response
       ..headers.contentType = ContentType.json
-      ..write(jsonEncode({'result': isCloudFlare}))
+      ..write(
+        jsonEncode({
+          'result': cloudflareSolveResult(
+            timedOut: timeOut,
+            challengeRemaining: isCloudFlare,
+          ),
+        }),
+      )
       ..close();
   } catch (e) {
     request.response
