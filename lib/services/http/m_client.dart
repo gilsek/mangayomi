@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:collection';
 import 'package:flutter/foundation.dart';
 import 'package:http/http.dart' as http;
 import 'package:http_interceptor/http_interceptor.dart';
@@ -16,6 +17,49 @@ import 'package:mangayomi/utils/log/log.dart';
 import 'package:mangayomi/services/http/rhttp/rhttp.dart' as rhttp;
 import 'package:mangayomi/services/http/doh/doh_resolver.dart';
 import 'package:mangayomi/services/http/doh/doh_providers.dart';
+
+class AsyncSingleFlight<T> {
+  final Map<Object, Future<T>> _active = {};
+
+  Future<T> run(Object key, Future<T> Function() operation) {
+    final active = _active[key];
+    if (active != null) return active;
+
+    final future = Future<T>.sync(operation);
+    _active[key] = future;
+    unawaited(
+      future.then<void>(
+        (_) => _remove(key, future),
+        onError: (Object _, StackTrace __) => _remove(key, future),
+      ),
+    );
+    return future;
+  }
+
+  void _remove(Object key, Future<T> future) {
+    if (identical(_active[key], future)) _active.remove(key);
+  }
+}
+
+final _webviewEvaluationSingleFlight = AsyncSingleFlight<String>();
+
+String webviewEvaluationKey(String url, List<String> scripts) {
+  return jsonEncode([url, scripts]);
+}
+
+UnmodifiableListView<flutter_inappwebview.UserScript> webviewInitialUserScripts(
+  List<String> scripts,
+) {
+  return UnmodifiableListView(
+    scripts.map(
+      (script) => flutter_inappwebview.UserScript(
+        source: script,
+        injectionTime:
+            flutter_inappwebview.UserScriptInjectionTime.AT_DOCUMENT_START,
+      ),
+    ),
+  );
+}
 
 class MClient {
   MClient();
@@ -293,7 +337,7 @@ String? userAgentForStoredCookie(
 
 bool isCloudflare(BaseResponse response) {
   return [403, 503].contains(response.statusCode) &&
-      ["cloudflare-nginx", "cloudflare"].contains(response.headers["server"]);
+      response.headers["cf-mitigated"] == "challenge";
 }
 
 bool cloudflareSolveResult({
@@ -496,50 +540,10 @@ Future<void> _evaluateJavascriptViaWebview(HttpRequest request) async {
         [];
     final time = data['time'] as int? ?? 30;
 
-    int t = 0;
-    bool timeOut = false;
-    bool isOk = false;
-    String response = "";
-    flutter_inappwebview.HeadlessInAppWebView? headlessWebView;
-    try {
-      headlessWebView = flutter_inappwebview.HeadlessInAppWebView(
-        webViewEnvironment: webViewEnvironment,
-        onWebViewCreated: (controller) {
-          controller.addJavaScriptHandler(
-            handlerName: 'setResponse',
-            callback: (args) {
-              response = args[0] as String;
-              isOk = true;
-            },
-          );
-        },
-        initialUrlRequest: flutter_inappwebview.URLRequest(
-          url: flutter_inappwebview.WebUri(url),
-          headers: headers,
-        ),
-        onLoadStop: (controller, url) async {
-          for (var script in scripts) {
-            await controller.platform.evaluateJavascript(source: script);
-          }
-        },
-      );
-
-      await headlessWebView.run();
-
-      await Future.doWhile(() async {
-        timeOut = time == t;
-        if (timeOut || isOk) {
-          return false;
-        }
-        await Future.delayed(const Duration(seconds: 1));
-        t++;
-        return true;
-      });
-    } finally {
-      try {
-        await headlessWebView?.dispose();
-      } catch (_) {}
-    }
+    final response = await _webviewEvaluationSingleFlight.run(
+      webviewEvaluationKey(url, scripts),
+      () => _runJavascriptViaWebview(url, headers, scripts, time),
+    );
     request.response
       ..headers.contentType = ContentType.json
       ..write(jsonEncode({'result': response}))
@@ -550,4 +554,54 @@ Future<void> _evaluateJavascriptViaWebview(HttpRequest request) async {
       ..write(jsonEncode({'error': 'Invalid JSON'}))
       ..close();
   }
+}
+
+Future<String> _runJavascriptViaWebview(
+  String url,
+  Map<String, String> headers,
+  List<String> scripts,
+  int time,
+) async {
+  int t = 0;
+  bool isOk = false;
+  String response = "";
+  flutter_inappwebview.HeadlessInAppWebView? headlessWebView;
+  try {
+    headlessWebView = flutter_inappwebview.HeadlessInAppWebView(
+      webViewEnvironment: webViewEnvironment,
+      onWebViewCreated: (controller) {
+        controller.addJavaScriptHandler(
+          handlerName: 'setResponse',
+          callback: (args) {
+            response = args[0] as String;
+            isOk = true;
+          },
+        );
+      },
+      initialUrlRequest: flutter_inappwebview.URLRequest(
+        url: flutter_inappwebview.WebUri(url),
+        headers: headers,
+      ),
+      initialUserScripts: webviewInitialUserScripts(scripts),
+      onLoadStop: (controller, url) async {
+        for (var script in scripts) {
+          await controller.platform.evaluateJavascript(source: script);
+        }
+      },
+    );
+
+    await headlessWebView.run();
+
+    await Future.doWhile(() async {
+      if (time == t || isOk) return false;
+      await Future.delayed(const Duration(seconds: 1));
+      t++;
+      return true;
+    });
+  } finally {
+    try {
+      await headlessWebView?.dispose();
+    } catch (_) {}
+  }
+  return response;
 }
