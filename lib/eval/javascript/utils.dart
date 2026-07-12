@@ -15,6 +15,10 @@ import 'package:mangayomi/services/http/m_client.dart';
 import 'package:mangayomi/utils/cryptoaes/js_unpacker.dart';
 import 'package:mangayomi/utils/log/log.dart';
 
+int webviewEvaluationTime(List<dynamic> args) {
+  return args.length > 3 ? (args[3] as int? ?? 30) : 30;
+}
+
 class JsUtils {
   late JavascriptRuntime runtime;
   JsUtils(this.runtime);
@@ -60,7 +64,7 @@ class JsUtils {
               'url': args[0]!,
               'headers': (args[1]! as Map).toMapStringString!,
               'scripts': (args[2]! as List).map((e) => e.toString()).toList(),
-              "time": args[3] ?? 30,
+              "time": webviewEvaluationTime(args as List<dynamic>),
             }),
           )
           .then((res) {
